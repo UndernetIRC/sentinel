@@ -10,7 +10,7 @@ use File::Copy;
 
 my %conf;
 my $files;
-my $gitraw = 'https://raw.githubusercontent.com/MrIron-no/sentinel/master/src';
+my $gitraw = 'https://raw.githubusercontent.com/UndernetIRC/sentinel/main/src';
 
 $SIG{CHLD} = 'DEFAULT';
 

@@ -151,7 +151,7 @@ while(1)
 
 sub check_update()
 {
-	my $data = get('https://raw.githubusercontent.com/mriron-no/sentinel/master/.version');
+	my $data = get('https://raw.githubusercontent.com/UndernetIRC/sentinel/main/.version');
 	open my $url_fh, '<', \$data or return -1;
 	return -1 unless defined $data;
 
@@ -234,7 +234,7 @@ sub apply_update
 	my $file = $conf{path} . "/.update/update.pl";
 
 	# Downloading update script
-	my $rc = getstore('https://raw.githubusercontent.com/MrIron-no/sentinel/master/src/update.pl', $file);
+	my $rc = getstore('https://raw.githubusercontent.com/UndernetIRC/sentinel/main/src/update.pl', $file);
 	if ( is_error($rc) )
 	{ 
 		logmsg("Error when downloading update script: $rc");
