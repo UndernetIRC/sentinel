@@ -1,0 +1,224 @@
+#!/usr/bin/env perl
+
+use strict;
+
+my $id;
+
+if ( `id` =~ /uid=(\d+)/ )
+{ $id = $1; }
+
+if ( $id == 0 )
+{
+	print "You're NOT allowed to run the installing as root.\n";
+	print "Please, su <username> and re-run the installation script.\n";
+	print "Installation aborted.\n";
+	exit 1;
+}
+
+print "checking installation directory.\n";
+my $status = 0;
+
+if ( $ARGV[0] )
+{
+	if ( $ARGV[0] =~ /^\// ) {
+		if ( -r "$ARGV[0]" )
+		{
+			if ( -d "$ARGV[0]" )
+			{
+				if ( -w "$ARGV[0]" )
+				{
+					$status = 1;
+				}
+				else
+				{
+					print "cannot write in $ARGV[0]\n";
+				}
+			}
+			else
+			{
+				print "$ARGV[0] is not a directory.\n";
+			}
+		}
+		elsif ( $ARGV[1] eq '--force' )
+		{
+			system("mkdir -p $ARGV[0]");
+			$status = 1;
+		}
+		else
+		{
+			print "$ARGV[0] doesnt exist. use $0 $ARGV[0] --force\n";
+		}
+	}
+	else
+	{
+		print "installation directory must be an ABSOLUTE PATH!\n";
+		print "example: $0 /home/sentinel\n";
+	}
+}
+else
+{
+	print "syntax : $0 /path/to/installation/directory\n";
+	print "example: $0 /home/sentinel\n";
+}
+
+if ( !$status ) { print "Installation aborted.\n"; exit 1; }
+
+print "testing required perl modules:\n";
+my $module;
+foreach $module (split(/ /,"strict File::Basename IO::Socket POSIX Time::Local Time::HiRes File::Copy File::Copy File::Path File::Pid File::chmod LWP::UserAgent LWP::Protocol::https LWP::Simple"))
+{
+	printf("    %-15s    ",$module);
+	if ( `/usr/bin/env perl -M$module -e 'print "1";' 2>&1` ne '1' )
+	{
+		$status = 0;
+		print "error: perl module $module not installed. try 'perl -MCPAN -i install $module'\n";
+	}
+	else
+	{
+		print "ok\n";
+	}
+}
+
+if ( $status )
+{
+	my $input;
+	my $install_mrtg = 0;
+	my $install_munin = 0;
+	print "Install with MRTG support? y/n: ";
+	$input = <STDIN>;
+	chomp($input);
+	if ( $input eq 'y') { $install_mrtg = 1; }
+
+	print "Install with munin support? y/n: ";
+	$input = <STDIN>;
+	chomp($input);
+	if ( $input eq 'y') { $install_munin = 1; }
+
+	print "creating directories...\n";
+	foreach(split(/ /,"etc bin var"))
+	{
+		print "    $ARGV[0]/$_\n";
+		system("mkdir $ARGV[0]/$_");
+	}
+
+	if ( $install_mrtg )
+	{
+		print "    $ARGV[0]/mrtg\n";
+		system("mkdir $ARGV[0]/mrtg");
+	}
+
+	if ( $install_munin )
+	{
+		print "    $ARGV[0]/munin-plugins\n";
+		system("mkdir $ARGV[0]/munin-plugins");
+	}
+
+	print "installing files...\n";
+	my $sed = $ARGV[0];
+	$sed =~ s/\//\\\\\\\\\//g;
+
+	my $files = "etc/sample.com";
+	if ( $install_mrtg )
+	{ $files .= " bin/runmrtg.pl mrtg/.htaccess"; }
+
+	foreach(split(/ /,$files))
+	{
+		print "    $ARGV[0]/$_\n";
+		my $file = $_;
+		open(FILE,">$ARGV[0]/$file");
+		open(INSTALL,"src/$file");
+		while(<INSTALL>)
+		{
+			s/\%INSTALL_PATH\%/$ARGV[0]/g;
+			print FILE $_;
+		}
+		close(INSTALL);
+		close(FILE);
+	}
+
+	print "    $ARGV[0]/README\n";
+	system("cp README $ARGV[0]/README");
+
+	$ files = "bin/sentinel.pl";
+	if ( $install_mrtg )
+	{ $files .= " mrtg/.htpasswd"; }
+	if ( $install_munin )
+	{ $files .= " munin-plugins/irc-sendq munin-plugins/irc-rping munin-plugins/irc-chan munin-plugins/irc-lusers munin-plugins/irc-usr munin-plugins/irc-servers"; }
+
+	foreach(split(/ /,$files))
+	{
+		print "    $ARGV[0]/$_\n";
+		system("cp src/$_ $ARGV[0]/$_");
+	}
+
+	print "setting permissions...\n";
+	system("chmod u+x $ARGV[0]/bin/sentinel.pl $ARGV[0]/bin $ARGV[0]/etc $ARGV[0]/var");
+	if ( $install_mrtg )
+	{
+		system("chmod u+x $ARGV[0]/bin/runmrtg.pl");
+		system("chmod u+x,g+rwx,o+rwx $ARGV[0]/mrtg");
+		system("chmod g+rw,o+rw $ARGV[0]/mrtg/.htaccess $ARGV[0]/mrtg/.htpasswd");
+	}
+
+	if ( $install_munin )
+	{
+		system("chmod -R u+x,g+rx,o+rx $ARGV[0]/var $ARGV[0]/munin-plugins");
+
+		my $plugindir;
+		if ( -d "/usr/local/etc/munin/plugins" )
+		{
+			$plugindir = "/usr/local/etc/munin/plugins";
+		}
+		elsif ( -d "/etc/munin/plugins" )
+		{
+			$plugindir = "/etc/munin/plugins";
+		}
+		else
+		{
+			print "Unable to locate munin plugins directory. Install manually.\n";
+		}
+
+		if ( $plugindir )
+		{
+			print "Located munin plugins directory at $plugindir\n";
+
+			my $plugins = "irc-sendq irc-rping irc-chan irc-lusers irc-usr irc-servers";
+
+			my $writeable = 0;
+			if ( -w $plugindir )
+			{ $writeable = 1; }
+
+			if ( $writeable )
+			{
+				foreach(split(/ /,$plugins))
+				{
+					print "$ARGV[0]/munin-plugins/$_ -> $plugindir/$_\n";
+					system("ln -s $ARGV[0]/munin-plugins/$_ $plugindir/$_");
+				}
+				print "Munin-plugins successfully linked to $plugindir.\n";
+			}
+			else
+			{
+				print "Run the following commands as root\n";
+				foreach(split(/ /,$plugins))
+				{
+					print "ln -s $ARGV[0]/munin-plugins/$_ $plugindir/$_\n";
+				}
+			}
+
+			print "Please add the following to the plugins configuration and restart the service:\n";
+			print "  [irc-*]\n";
+			print "    env.logfile  $ARGV[0]/var/sentinel.log\n\n";
+			print "  [irc-servers]\n";
+			print "    env.mapfile  $ARGV[0]/var/map.txt\n";
+			print "    en.clithres 10\n";
+		}
+	}
+
+	print "cd $ARGV[0] and read the README file carefully!!!\n";
+	print "Installation done.\n";
+}
+else
+{
+	exit 1;
+}

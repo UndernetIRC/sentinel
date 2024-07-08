@@ -1,0 +1,91 @@
+#!/usr/bin/env perl
+# -*- perl -*-
+
+=head1 NAME
+
+irc-servers - Plugin to graph the number of clients on the network's servers.
+
+=head1 CONFIGURATION
+
+You must set env.mapfile to the map.txt file outputted by Sentinel. If env.clithres
+is set, stats will exclude servers with number of clients below that number (typically services).
+
+  [irc-servers]
+    env.mapfile  /home/sentinel/var/map.txt
+    en.clithres 10
+
+=head1 AUTHOR
+
+MrIron <iron@masterbofh.org>
+
+=head1 LICENSE
+
+GPLv3
+
+=head1 MAGIC MARKERS
+
+  #%# family=manual
+  #%# capabilities=autoconf
+
+=cut
+
+use POSIX;
+use Munin::Plugin;
+
+my $MAPFILE = $ENV{'mapfile'} || '/home/sentinel/var/map.txt';
+my $CLITHRES = $ENV{'clithres'} || 0 ;
+
+my $modification = -M $MAPFILE;
+my $lastupdated = ceil(time() - $modification);
+
+my @servers;
+
+if ($ARGV[0] and $ARGV[0] eq "autoconf") {
+  if ( ! -r $MAPFILE ) {
+    print "log file not found or wrong permissions\n";
+    exit 0;
+  }
+  print "yes\n";
+  exit 0;
+}
+
+open(MAP,$MAPFILE);
+while(<MAP>)
+{
+	if ( /^([^\s]+) (\d+)/ )
+	{
+		if ( $2 > $CLITHRES )
+		{
+			$data{$1} = $2;
+			push(@servers, $1);
+		}
+	}
+}
+
+close(MAP);
+
+if($ARGV[0] and $ARGV[0] eq "config") {
+	print "host_name $ENV{FQDN}\n";
+	print "graph_title irc servers\n";
+	print "graph_category irc\n";
+	print "graph_vlabel Number of clients on the network's servers\n";
+	print "graph_order @uplinks\n";
+	print "graph_args -l 0\n";
+
+	foreach (@servers)
+	{	
+		my $altname = $_;
+		$altname =~ s/\./_/g;
+		print "$altname.label $_\n";
+		print "$altname.draw LINE2\n";
+	}
+
+    exit 0;
+}
+
+foreach (@servers)
+{
+	my $altname = $_;
+	$altname =~ s/\./_/g;
+	print "$altname.value $lastupdated:$data{$_}\n";
+}

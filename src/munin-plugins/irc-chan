@@ -1,0 +1,69 @@
+#!/usr/bin/env perl
+# -*- perl -*-
+
+=head1 NAME
+
+irc-chan - Plugin to graph the number of channels on an IRC network from Sentinel.
+
+=head1 CONFIGURATION
+
+You must set env.logfile to the sentinel.log file outputted by Sentinel.
+
+  [irc-*]
+    env.logfile  /home/sentinel/var/sentinel.log
+
+=head1 AUTHOR
+
+MrIron <iron@masterbofh.org>
+
+=head1 LICENSE
+
+GPLv3
+
+=head1 MAGIC MARKERS
+
+  #%# family=manual
+  #%# capabilities=autoconf
+
+=cut
+
+use POSIX;
+use Munin::Plugin;
+
+my $LOGFILE = $ENV{'logfile'} || '/home/sentinel/var/sentinel.log';
+
+my $modification = -M $LOGFILE;
+my $lastupdated = ceil(time() - $modification);
+
+if ($ARGV[0] and $ARGV[0] eq "autoconf") {
+  if ( ! -r $LOGFILE ) {
+    print "log file not found or wrong permissions\n";
+    exit 0;
+  }
+  print "yes\n";
+  exit 0;
+}
+
+if($ARGV[0] and $ARGV[0] eq "config") {
+    print "host_name $ENV{FQDN}\n";
+    print "graph_title irc channels\n";
+    print "graph_category irc\n";
+    print "graph_order channels\n";
+    print "graph_args -l 0\n";
+    print "channels.label channels\n";
+    print "channels.draw LINE2\n";
+    exit 0;
+}
+
+open(LOG,$LOGFILE);
+while(<LOG>)
+{
+	chop;
+	my ($name,$value)=split(/:/);
+
+	$data{$name} = $value;
+}
+
+close(LOG);
+
+print "channels.value $lastupdated:$data{CHANNEL}\n";
