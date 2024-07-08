@@ -234,7 +234,7 @@ sub apply_update
 	my $file = $conf{path} . "/.update/update.pl";
 
 	# Downloading update script
-	my $rc = getstore('https://raw.githubusercontent.com/UndernetIRC/sentinel/main/src/update.pl', $file);
+	my $rc = getstore('https://raw.githubusercontent.com/UndernetIRC/sentinel/main/tools/update.pl', $file);
 	if ( is_error($rc) )
 	{ 
 		logmsg("Error when downloading update script: $rc");
