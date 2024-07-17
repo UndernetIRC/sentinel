@@ -117,7 +117,7 @@ if ( $status )
 	my $sed = $ARGV[0];
 	$sed =~ s/\//\\\\\\\\\//g;
 
-	my $files = "etc/sample.com";
+	my $files = "etc/sample.conf";
 	if ( $install_mrtg )
 	{ $files .= " bin/runmrtg.pl mrtg/.htaccess"; }
 
