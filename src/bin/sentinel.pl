@@ -43,7 +43,7 @@ use English qw(-no_match_vars);
 $|=1;
 
 my $version = '1.0';
-my $revision = 2024070800;
+my $revision = 2024080600;
 
 $SIG{PIPE} = "IGNORE";
 $SIG{CHLD} = sub { while ( waitpid(-1, WNOHANG) > 0 ) { } };
@@ -424,11 +424,11 @@ sub timed_events
 
 		if ( $update =~ s/^-2 *// )
 		{
-			queuemsg(3,$CMD . chr(3) . 4 . chr(2) . "UPDATE" . chr(2) . ": An update is available, but the following dependencies are missing: $update. Please install and re-run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
+			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": An update is available, but the following dependencies are missing: $update. Please install and re-run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
 		}
 		elsif ( $update ne -1 && $update ne 0 )
 		{
-			queuemsg(3,$CMD . chr(3) . 4 . chr(2) . "UPDATE" . chr(2) . ": $update - run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
+			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": $update - run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
 		}
 		else
 		{
@@ -511,6 +511,7 @@ sub timed_events
 			if ( $data{notice}{cycles} > 1 )
 			{
 				send_warning("Possible attack " . chr(31) . "ended" . chr(31) . ": +$data{notice}{usermore}/-$data{notice}{userless} users in " . $conf{cetimethres} * $data{notice}{cycles} . " seconds ($data{lusers}{locusers} users)");
+				push_notify($conf{pushuserchange}, "USER CHANGE: +$data{notice}{usermore}/-$data{notice}{userless} users in " . $conf{cetimethres} * $data{notice}{cycles} . " seconds");
 			}
 
 			# Find next unique attack id
@@ -1351,7 +1352,7 @@ sub irc_loop
 				if ( $line =~ /warm/i )
 				{
 					%conf = load_config($config);
-					queuemsg(3,$CMD . chr(3) . 4 . "Configuration reloaded by " . chr(2) . $nick . chr(2) . chr(3));
+					queuemsg(3,$CMD . chr(3) . 2 . "Configuration reloaded by " . chr(2) . $nick . chr(2) . chr(3));
 					queuemsg(3,"$replymode $nick :configuration reloaded.");
 				}
 				elsif ( $line =~ /cold/i )
@@ -1683,7 +1684,7 @@ sub irc_loop
 			# end of WHO
 			if ( !$data{rfs} )
 			{ 
-				queuemsg(2,$CMD . chr(2) . "Sentinel" . chr(2) . " v$conf{version}, ready.");
+				queuemsg(2,$CMD . chr(3) . 2 . chr(2) . "Sentinel" . chr(2) . " v$conf{version}, ready." . chr(3));
 			}
 			$data{rfs} = 1;
 
@@ -1828,7 +1829,7 @@ sub irc_loop
 					$opermode = "LocalOPER";
 				}
 
-				queuemsg(2,$CMD . chr(3) . 4 . "$opernick\!$operhost is now ". chr(31) ."$opermode" . chr(31) . chr(3));
+				queuemsg(2,$CMD . chr(3) . 2 . "$opernick\!$operhost is now ". chr(31) ."$opermode" . chr(31) . chr(3));
 				if ( !($opernick =~ /^$data{nick}$/i ) && $conf{chaninvite} )
 				{
 					queuemsg(2,"INVITE $opernick $conf{channel}");
@@ -1836,7 +1837,7 @@ sub irc_loop
 			}
 			elsif ( $line =~ /^Net junction: ([^\s]+) ([^\s]+)$/ )
 			{
-				queuemsg(3,$CMD . chr(3) . 4 . chr(2) . "NETJOIN:" . chr(2) ." $1 -- $2" . chr(3));
+				queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "NETJOIN:" . chr(2) ." $1 -- $2" . chr(3));
 
 				my $notified = 0;
 				my $server1 = $1;
@@ -2124,7 +2125,7 @@ sub load_config
 		{ push(@ECONF,"CHANNEL"); }
 		if ( !( $newconf{chankey} =~ /^(([^\s]+)|)$/i ) )
 		{ push(@ECONF,"CHANKEY"); }
-		if ( !( $newconf{chanmode} =~ /^\+.*$/ ) )
+		if ( !( $newconf{chanmode} =~ /^(\+[kimnpstrDrcC]+)?$/ ) )
 		{ push(@ECONF,"CHANMODE"); }
 		if ( !( $newconf{chaninvite} =~ /^0|1$/i ) )
 		{ push(@ECONF,"CHANINVITE"); }

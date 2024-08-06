@@ -7,6 +7,7 @@ use warnings;
 use LWP::Simple;
 use File::Path qw( make_path rmtree );
 use File::Copy;
+use File::chmod qw(chmod);
 
 my %conf;
 my $files;
@@ -289,6 +290,9 @@ sub apply_updates
 	print("Copying original configuration file " . $ARGV[0] . " --> " . $conf{path} . "/.backup/" . $time . "/" . $config . "\n");
 	copy($conf{path} . "/.update/etc/" . $config . ".new", $ARGV[0]);
 	print("Copying merged configuration file " . $conf{path} . "/.update/etc/" . $config . ".new --> " . $ARGV[0] . "\n");
+
+	# Set permissions
+	chmod("+x", $conf{path} . "/bin/sentinel.pl");
 }
 
 sub clean_up
