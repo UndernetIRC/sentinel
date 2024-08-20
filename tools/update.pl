@@ -8,10 +8,12 @@ use LWP::Simple;
 use File::Path qw( make_path rmtree );
 use File::Copy;
 use File::chmod qw(chmod);
+$File::chmod::UMASK = 0;
 
 my %conf;
 my $files;
 my $gitraw = 'https://raw.githubusercontent.com/UndernetIRC/sentinel/main/src';
+my $local_update = 0;
 
 $SIG{CHLD} = 'DEFAULT';
 
@@ -40,6 +42,10 @@ else
 	exit;
 }
 
+if ( $ARGV[1] eq '-l' )
+{
+	$local_update = 1;
+}
 # Fetch name of config file
 my $config = ( split '/', $ARGV[0] )[ -1 ];
 
@@ -67,15 +73,29 @@ exit(0);
 # Fetch update from GitHub
 sub fetch_update
 {
-	foreach(@{$files})
+	if (!$local_update)
 	{
-		my $url = $gitraw . $_;
-		my $file = $conf{path} . "/.update" . $_;
-		my $rc = getstore($url, $file);
+		print "Fetching files from the git repository\n";
+		foreach(@{$files})
+		{
+			my $url = $gitraw . $_;
+			my $file = $conf{path} . "/.update" . $_;
+			my $rc = getstore($url, $file);
 
-		if ( is_error($rc) )
-		{ die "Download of $url failed: $rc"; }
-		print "Downloaded $url -- saved to: $file\n";
+			if ( is_error($rc) )
+			{ die "Download of $url failed: $rc"; }
+			print "Downloaded $url -- saved to: $file\n";
+		}
+	}
+	else
+	{
+		print "Fetching files from the local folder\n";
+		foreach(@{$files})
+		{
+			my $file = $conf{path} . "/.update" . $_;
+			copy("../src" . $_, $file);
+			print("Copying ../src" . $_ . " --> " . $file . "\n");
+		}
 	}
 
 	merge_config();
@@ -128,6 +148,10 @@ sub load_config
 				{
 					push(@{$conf{dcclisten}},$value);
 				}
+			}
+			elsif ( $name eq 'channel' )
+			{
+				$conf{reportchan}=$value;
 			}
 			else
 			{

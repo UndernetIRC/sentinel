@@ -42,8 +42,8 @@ use English qw(-no_match_vars);
 
 $|=1;
 
-my $version = '1.0';
-my $revision = 2024080600;
+my $version = '1.1';
+my $revision = 2024082100;
 
 $SIG{PIPE} = "IGNORE";
 $SIG{CHLD} = sub { while ( waitpid(-1, WNOHANG) > 0 ) { } };
@@ -426,13 +426,17 @@ sub timed_events
 		{
 			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": An update is available, but the following dependencies are missing: $update. Please install and re-run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
 		}
-		elsif ( $update ne -1 && $update ne 0 )
+		elsif ( $update == 0 )
 		{
-			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": $update - run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
+			logdeb("No updates available (running v$version (rev. $revision)).");
+		}
+		elsif ( $update == -1 )
+		{
+			logdeb("There was an error checking for updates. (-1)");
 		}
 		else
 		{
-			logmsg("There was an error checking for updates.");
+			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": $update - run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
 		}
 	}
 	elsif ( time - $data{time}{connexitclean} > 3600 )
@@ -1052,7 +1056,10 @@ sub timed_events
 
 	if ( ( time - $data{time}{account} ) >= 300 )
 	{
-		queuemsg(1,"WHO $conf{channel} xco%na");
+		my $channel = $conf{reportchan};
+		if ( $conf{operchan} ne '' ) { $channel .= ",$conf{operchan}"; }
+
+		queuemsg(1,"WHO $channel xco%na");
 		delete $data{account};
 		$data{time}{account} = time;
 	}
@@ -1111,7 +1118,7 @@ sub timed_events
 		{
 			if ( int($data{clines}{$_}) > $conf{rpingwarn} && int($data{clines}{$_}) > $data{last}{rping}{$_} && exists $data{uplinks}{$_} )
 			{
-				my $srv = $_;
+			my $srv = $_;
 				$srv =~ s/\.$conf{networkdomain}//i;
 
 				my $diff = $data{clines}{$_} - $data{last}{rping}{$_};
@@ -1162,28 +1169,37 @@ sub irc_loop
 {
 	my $line = shift;
 
-	if ( $line =~ s/^:((\\|\||\`|\[|\]|\^|\{|\}|\-|\_|\w)+)\!((\~|\w|\[|\])+)\@((\w|\.|\-|\_)+) //i )
+	if ( $line =~ s/^:([^\s]+)\!([^\s]+)\@([^\s]+) //i )
 	{
 		# user stuff
 
 		my $nick = $1;
-		my $user = $3;
-		my $host = $5;
+		my $user = $2;
+		my $host = $3;
 
-		if ( $line =~ /^JOIN (:|)$conf{channel}$/i )
+		if ( $line =~ /^JOIN ($conf{reportchan})$/i || ($conf{operchan} ne '' && $line =~ /^JOIN ($conf{operchan})$/i ) )
 		{
+			# correct channel?
+			my $channel = $1;
+
 			# user joined channel
 
 			if ( $nick =~ /^$data{nick}$/i )
 			{
 				# its me!
-				if ( $conf{channel} =~ /^\&/ )
+				if ( $channel =~ /^\&/ )
 				{
-					queuemsg(1,"MODE $conf{channel} +o $data{nick}");
+					queuemsg(1,"MODE $channel +o $data{nick}");
 				}
-				queuemsg(1,"WHO $conf{channel} xc%nifa");
-				delete $data{oper};
-				delete $data{account};
+
+				if ( $channel =~ /^$conf{reportchan}$/i )
+				{
+					my $checkchan = $conf{reportchan};
+					if ( $conf{operchan} ne '' ) { $checkchan .= ",$conf{operchan}"; }
+					queuemsg(1,"WHO $checkchan xc%nifa");
+					delete $data{oper};
+					delete $data{account};
+				}
 			}
 			else
 			{
@@ -1193,22 +1209,24 @@ sub irc_loop
 				queuemsg(2,"NOTICE $nick :Please wait while checking your identity...");
 			}
 		}
-		elsif ( $line =~ s/^MODE $conf{channel} //i )
+		elsif ( ($line =~ s/^MODE\s+($conf{reportchan})\s+//i) || ($conf{operchan} ne '' && $line =~ s/^MODE\s+($conf{operchan})\s+//i) )
 		{
+			my $channel = $1;
+
 			# channel mode
 			if ( $line =~ /^\+o $data{nick}$/i )
 			{
 				if ( $data{lusers}{maxusers} && !$conf{hubmode} && !$conf{multimode} ) {
-					queuemsg(1,"MODE $conf{channel} +l $data{lusers}{maxusers}");
+					queuemsg(1,"MODE $channel +l $data{lusers}{maxusers}");
 				}
 
 				if ( $conf{chanmode} =~ /k/ )
 				{
-					queuemsg(1,"MODE $conf{channel} $conf{chanmode} $conf{chankey}");
+					queuemsg(1,"MODE $channel $conf{chanmode} $conf{chankey}");
 				}
 				elsif ( $conf{chanmode} )
 				{
-					queuemsg(1,"MODE $conf{channel} $conf{chanmode}");
+					queuemsg(1,"MODE $channel $conf{chanmode}");
 				}
 			}
 			elsif ( $line =~ /^(\-|\+|\w)+( \d+)*$/ )
@@ -1220,12 +1238,12 @@ sub irc_loop
 				else
 				{
 					if ( $data{lusers}{maxusers} && !$conf{hubmode} && !$conf{multimode} ) {
-						queuemsg(2,"MODE $conf{channel} +l $data{lusers}{maxusers}");
+						queuemsg(2,"MODE $channel +l $data{lusers}{maxusers}");
 					}
 
 					if ( $conf{chanmode} )
 					{
-						queuemsg(2,"MODE $conf{channel} $conf{chanmode}");
+						queuemsg(2,"MODE $channel $conf{chanmode}");
 					}
 				}
 			}
@@ -1299,13 +1317,13 @@ sub irc_loop
 				{
 					$update = "An update is available, but the following dependencies are missing: $update. Please install and re-run 'update install'.";
 				}
-				elsif ( $update eq -1 )
-				{
-					$update = "There was an error checking for updates.";
-				}
-				elsif ( !$update )
+				elsif ( $update == 0 )
 				{
 					$update = "No updates available (running v$version (rev. $revision)).";
+				}
+				elsif ( $update == -1 )
+				{
+					$update = "There was an error checking for updates.";
 				}
 				else
 				{
@@ -1426,7 +1444,7 @@ sub irc_loop
 					if ( $dccsock && $dccport )
 					{
 						my $code = gencode();
-						queuemsg(3,"NOTICE \@$conf{channel} :$nick requested DCC, code is $code");
+						queuemsg(3,"NOTICE \@$conf{reportchan} :$nick requested DCC, code is $code");
 						my $dccip = unpack("N",inet_aton($userip));
 						queuemsg(3,"PRIVMSG $nick :DCC CHAT chat $dccip $dccport");
 						dcc($dccsock,$code,$data{offset}{$nick});
@@ -1539,21 +1557,19 @@ sub irc_loop
 			queuemsg(1,"MODE $data{nick} +ids 65535");
 			if ( $conf{chankey} )
 			{
-				queuemsg(1,"JOIN $conf{channel} $conf{chankey}");
+				if ( $conf{operchan} ne '' ) { queuemsg(1,"JOIN $conf{operchan} $conf{chankey}"); }
+				queuemsg(1,"JOIN $conf{reportchan} $conf{chankey}");
 			}
 			else
 			{
-				queuemsg(1,"JOIN :$conf{channel}");
+				if ( $conf{operchan} ne '' ) { queuemsg(1,"JOIN :$conf{operchan}"); }
+				queuemsg(1,"JOIN :$conf{reportchan}");
 			}
 		}
-		elsif ( $line =~ /^(471|472|473|474|475) /  )
+		elsif ( $line =~ /^(471|472|473|474|475) $data{nick} ((\&|\#)\w+)/i  )
 		{
 			# Unable to join channel, OVERRIDE it !
-			if ( $conf{channel} =~ /^\&/ )
-			{
-				queuemsg(1,"JOIN $conf{channel} :OVERRIDE");
-			}
-
+			queuemsg(1,"JOIN $2 :OVERRIDE");
 		}
 		elsif ( $line =~ /^433 / )
 		{
@@ -1564,7 +1580,8 @@ sub irc_loop
 		elsif ( $line =~ /^313 $data{nick} (.*) :is an irc operator$/i )
 		{
 			$data{oper}{$1} = 1;
-			queuemsg(2,"MODE $conf{channel} +o $1");
+			queuemsg(2,"MODE $conf{reportchan} +o $1");
+			if ( $conf{operchan} ne '' ) { queuemsg(2,"MODE $conf{operchan} +o $1"); }
 		}
 		elsif ( $line =~ /^330 $data{nick} (.*) (.*) :is logged in as$/i )
 		{
@@ -1579,7 +1596,8 @@ sub irc_loop
 				{
 					if ( $3 =~ /^$_$/ )
 					{
-						queuemsg(2,"MODE $conf{channel} +o $nick");
+						queuemsg(2,"MODE $conf{reportchan} +o $nick");
+						if ( $conf{operchan} ne '' ) { queuemsg(2,"MODE $conf{operchan} +o $nick"); }
 					}
 				}
 		}
@@ -1620,21 +1638,21 @@ sub irc_loop
 		}
 		elsif ( $line =~ s/^354 $data{nick} //i )
 		{
-			if ( $line =~ /^((\~|\w|\{|\}|\[|\]|\^|\.|\-|\|)+) (.*) ((\w|\-|\:|\_|\.)+) ((\\|\||\`|\[|\]|\{|\}|\-|\_|\w|\^)+) ((\w|\@|\<|\+|\-|\*)+) (\d+) (\w+) :(.*)$/i )
+			if ( $line =~ /^([^\s]+) ((\.|\:|\w)+) ((\w|\-|\:|\_|\.)+) ([^\s]+) ((\w|\@|\<|\+|\-|\*)+) (\d+) (\w+) :(.*)$/i )
 			{
 				$data{autoid}++;
 				my $autoid = $data{autoid};
 
 				$data{who}{$autoid}{user}  = $1;
-				$data{who}{$autoid}{ip}    = $3;
+				$data{who}{$autoid}{ip}    = $2;
 				$data{who}{$autoid}{host}  = $4;
 				$data{who}{$autoid}{nick}  = $6;
-				$data{who}{$autoid}{mode}  = $8;
-				$data{who}{$autoid}{idle}  = $10;
-				$data{who}{$autoid}{xuser} = $11;
-				$data{who}{$autoid}{rname} = $12;
+				$data{who}{$autoid}{mode}  = $7;
+				$data{who}{$autoid}{idle}  = $9;
+				$data{who}{$autoid}{xuser} = $10;
+				$data{who}{$autoid}{rname} = $11;
 				open(WHO,">>$conf{path}/var/users.tmp");
-				print WHO "$1	$3	$4	$6	$10	$11	$12	$8\n";
+				print WHO "$1	$2	$4	$6	$9	$10	$11	$7\n";
 				close(WHO);
 			}
 			elsif ( $line =~ /^([^\s]+) (\w+)$/i )
@@ -1675,7 +1693,8 @@ sub irc_loop
 				{
 					# is not oper nor permitted
 					delete $data{oper}{$opernick};
-					queuemsg(2,"KICK $conf{channel} $opernick :You have no right to be in this channel!");
+					queuemsg(2,"KICK $conf{reportchan} $opernick :You have no right to be in this channel!");
+					if ( $conf{operchan} ne '' ) { queuemsg(2,"KICK $conf{operchan} $opernick :You have no right to be in this channel!"); }
 				}
 			}
 		}
@@ -1832,7 +1851,8 @@ sub irc_loop
 				queuemsg(2,$CMD . chr(3) . 2 . "$opernick\!$operhost is now ". chr(31) ."$opermode" . chr(31) . chr(3));
 				if ( !($opernick =~ /^$data{nick}$/i ) && $conf{chaninvite} )
 				{
-					queuemsg(2,"INVITE $opernick $conf{channel}");
+					queuemsg(2,"INVITE $opernick $conf{reportchan}");
+					if ( $conf{operchan} ne '' ) { queuemsg(2,"INVITE $opernick $conf{operchan}"); }
 				}
 			}
 			elsif ( $line =~ /^Net junction: ([^\s]+) ([^\s]+)$/ )
@@ -1917,7 +1937,8 @@ sub irc_loop
 				$data{status}{lusers} = 1;
 				if ( !$conf{multimode} )
 				{
-					queuemsg(1,"MODE $conf{channel} +l $data{lusers}{maxusers}");
+					queuemsg(1,"MODE $conf{reportchan} +l $data{lusers}{maxusers}");
+					if ( $conf{operchan} ne '' ) { queuemsg(1,"MODE $conf{operchan} +l $data{lusers}{maxusers}"); }
 				}
 			}
 		}
@@ -2103,9 +2124,9 @@ sub load_config
 		{ push(@ECONF,"SERVERPORT"); }
 		if ( !( $newconf{vhost} =~ /^(\d+\.\d+\.\d+\.\d+|)$/ ) )
 		{ push(@ECONF,"VHOST"); }
-		if ( !( $newconf{hubmode} =~ /^0|1$/i ) )
+		if ( !( $newconf{hubmode} =~ /^0|1$/ ) )
 		{ push(@ECONF,"HUBMODE"); }
-		if ( !( $newconf{multimode} =~ /^0|1$/i ) )
+		if ( !( $newconf{multimode} =~ /^0|1$/ ) )
 		{ push(@ECONF,"MULTIMODE"); }
 		if ( !( $newconf{timeout} =~ /^\d+$/ ) )
 		{ push(@ECONF,"TIMEOUT"); }
@@ -2113,26 +2134,28 @@ sub load_config
 		{ push(@ECONF,"DCCENABLE"); }
 		if ( !( $newconf{dccport} =~ /^\d+$/ ) )
 		{ push(@ECONF,"DCCPORT"); }
-		if ( !( $newconf{nick} =~ /^(,|[^\s])+$/i ) )
+		if ( !( $newconf{nick} =~ /^(,|[^\s])+$/ ) )
 		{ push(@ECONF,"NICK"); }
-		if ( !( $newconf{ident} =~ /^\w+$/i ) )
+		if ( !( $newconf{ident} =~ /^\w+$/ ) )
 		{ push(@ECONF,"IDENT"); }
 		if ( !( $newconf{operuser} =~ /^.+$/ ) )
 		{ push(@ECONF,"OPERUSER"); }
 		if ( !( $newconf{operpass} =~ /^.+$/ ) )
 		{ push(@ECONF,"OPERPASS"); }
-		if ( !( $newconf{channel} =~ /^(\&|\#)\w+$/i ) )
-		{ push(@ECONF,"CHANNEL"); }
-		if ( !( $newconf{chankey} =~ /^(([^\s]+)|)$/i ) )
+		if ( !( $newconf{reportchan} =~ /^(\&|\#)\w+$/ ) )
+		{ push(@ECONF,"REPORTHAN"); }
+		if ( !( $newconf{operchan} =~ /^((\&|\#)\w+)?$/ ) )
+		{ push(@ECONF,"OPERCHAN"); }
+		if ( !( $newconf{chankey} =~ /^(([^\s]+)|)$/ ) )
 		{ push(@ECONF,"CHANKEY"); }
 		if ( !( $newconf{chanmode} =~ /^(\+[kimnpstrDrcC]+)?$/ ) )
 		{ push(@ECONF,"CHANMODE"); }
-		if ( !( $newconf{chaninvite} =~ /^0|1$/i ) )
+		if ( !( $newconf{chaninvite} =~ /^0|1$/ ) )
 		{ push(@ECONF,"CHANINVITE"); }
-		if ( !( $newconf{networkdomain} =~ /^(\w|\.|\-|\_)+$/i ) )
+		if ( !( $newconf{networkdomain} =~ /^(\w|\.|\-|\_)+$/ ) )
 		{ push(@ECONF,"NETWORKDOMAIN"); }
 
-		if ( !( $newconf{trafficreport} =~ /^0|1$/i ) )
+		if ( !( $newconf{trafficreport} =~ /^0|1$/ ) )
 		{ push(@ECONF,"TRAFFICREPORT"); }
 
 		if ( $newconf{operfailmax} =~ /^\d+$/ )
@@ -2195,7 +2218,7 @@ sub load_config
 		if ( !( $newconf{pushenable} =~ /^0|1$/ ) )
 		{ push(@ECONF,"PUSHENABLE"); }
 
-		if ( !( $newconf{pushnetsplit} =~ /^(\w|\.)+ \-2|\-1|0|1|2$/i ) )
+		if ( !( $newconf{pushnetsplit} =~ /^(\w|\.)+ \-2|\-1|0|1|2$/ ) )
 		{ push(@ECONF,"PUSHNETSPLIT"); }
 		if ( !( $newconf{pushnetall} =~ /^off|\-2|\-1|0|1|2$/i ) )
 		{ push(@ECONF,"PUSHNETALL"); }
@@ -2265,11 +2288,11 @@ sub load_config
 
 		if ( $newconf{reportcmd} =~ /privmsg/i )
 		{
-			$CMD = "PRIVMSG $newconf{channel} :";
+			$CMD = "PRIVMSG $newconf{reportchan} :";
 		}
 		elsif ( $newconf{reportcmd} =~ /onotice/i )
 		{
-			$CMD = "NOTICE \@$newconf{channel} :";
+			$CMD = "NOTICE \@$newconf{reportchan} :";
 		}
 
 		return %newconf;
@@ -2285,7 +2308,7 @@ sub logdeb
 {
 	if ( $debug )
 	{
-		printf("%s DEBUG : %s\n",unix2date(time),(shift));
+		printf("%s DEBUG : %s\n",unix2local(),(shift));
 	}
 }
 
@@ -2293,12 +2316,12 @@ sub logmsg
 {
 	if ( $debug || !exists $conf{path} )
 	{
-		printf("%s LOG   : %s\n",unix2date(time),(shift));
+		printf("%s LOG   : %s\n",unix2local(),(shift));
 	}
 	else
 	{
 		open(LOGFILE,">>$conf{path}/var/debug.log");
-		print LOGFILE sprintf("%s LOG   : %s\n",unix2date(time),(shift));
+		print LOGFILE sprintf("%s LOG   : %s\n",unix2local(),(shift));
 		close(LOGFILE);
 	}
 }
@@ -2307,12 +2330,12 @@ sub logerr
 {
 	if ( $debug || !exists $conf{path} )
 	{
-		printf("%s ERROR : %s\n",unix2date(time),(shift));
+		printf("%s ERROR : %s\n",unix2local(),(shift));
 	}
 	else
 	{
 		open(LOGFILE,">>$conf{path}/var/debug.err");
-		print LOGFILE sprintf("%s ERROR : %s\n",unix2date(time),(shift));
+		print LOGFILE sprintf("%s ERROR : %s\n",unix2local(),(shift));
 		close(LOGFILE);
 	}
 }
@@ -2596,7 +2619,7 @@ sub dcc
 			my $auth = 0;
 
 			open(DCCLOG,">>$conf{path}/var/dcc.log");
-			print DCCLOG sprintf("[%s] %s: connect\n",unix2date(time),$client->peerhost);
+			print DCCLOG sprintf("[%s] %s: connect\n",unix2local(),$client->peerhost);
 
 			while(fileno($client))
 			{
@@ -2612,14 +2635,14 @@ sub dcc
 						}
 						else
 						{
-							print DCCLOG sprintf("[%s] %s: connection reset by peer\n",unix2date(time),$client->peerhost);
+							print DCCLOG sprintf("[%s] %s: connection reset by peer\n",unix2local(),$client->peerhost);
 							exit;
 						}
 					}
 				}
 				if ( $line )
 				{
-					print DCCLOG sprintf("[%s] %s: command: %s\n",unix2date(time),$client->peerhost,$line);
+					print DCCLOG sprintf("[%s] %s: command: %s\n",unix2local(),$client->peerhost,$line);
 					$lastin = time;
 					$warned = 0;
 
@@ -2632,7 +2655,7 @@ sub dcc
 						if ( $line eq $code )
 						{
 							$auth = 1;
-							print DCCLOG sprintf("[%s] %s: authenticated\n",unix2date(time),$client->peerhost);
+							print DCCLOG sprintf("[%s] %s: authenticated\n",unix2local(),$client->peerhost);
 							print $client "Sentinel v$conf{version} DCC Interface\n";
 
 							my $eoff = easytime($offset);
@@ -2646,7 +2669,7 @@ sub dcc
 						}
 						else
 						{
-							print DCCLOG sprintf("[%s] %s: wrong password\n",unix2date(time),$client->peerhost);
+							print DCCLOG sprintf("[%s] %s: wrong password\n",unix2local(),$client->peerhost);
 							print $client "password mismatch, bye\n";
 							shutdown($client,2);
 							exit;
@@ -3190,7 +3213,7 @@ sub dcc
 					}
 					elsif ( $line =~ /^quit$/i )
 					{
-						print DCCLOG sprintf("[%s] %s: quit\n",unix2date(time),$client->peerhost);
+						print DCCLOG sprintf("[%s] %s: quit\n",unix2local(),$client->peerhost);
 						print $client "Thanks for using Sentinel v$conf{version}, bye!\n";
 						exit;
 					}
@@ -3208,7 +3231,7 @@ sub dcc
 				}
 				elsif ( time - $lastin >= $dcctimeout )
 				{
-					print DCCLOG sprintf("[%s] %s: timeout\n",unix2date(time),$client->peerhost);
+					print DCCLOG sprintf("[%s] %s: timeout\n",unix2local(),$client->peerhost);
 					print $client "DCC timeout.\n";
 					exit;
 				}
@@ -3334,6 +3357,16 @@ sub unix2date
 	$ts += shift || 0;
 
 	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday) = gmtime($ts);  
+
+	$mon++;
+	$year +=1900;
+
+	return sprintf("%04d-%02d-%02d %02d:%02d:%02d",$year,$mon,$mday,$hour,$min,$sec);
+}
+
+sub unix2local
+{
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday) = localtime(time);
 
 	$mon++;
 	$year +=1900;
