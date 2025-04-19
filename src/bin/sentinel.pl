@@ -39,11 +39,12 @@ use LWP::UserAgent;
 use LWP::Protocol::https;
 use LWP::Simple;
 use English qw(-no_match_vars);
+use Net::CIDR;
 
 $|=1;
 
-my $version = '1.1';
-my $revision = 2024082100;
+my $version = '1.2';
+my $revision = 2025041900;
 
 $SIG{PIPE} = "IGNORE";
 $SIG{CHLD} = sub { while ( waitpid(-1, WNOHANG) > 0 ) { } };
@@ -52,6 +53,7 @@ my %server;
 my %data;
 my $config;
 my $CMD;
+my %cap;
 
 if ( $ARGV[0] )
 {
@@ -88,6 +90,10 @@ $data{time}{lastcheck} = 0;
 $data{time}{checkupdate} = 0;
 $data{time}{connexitclean} = 0;
 
+# Initialising counters
+$data{fw}{cycles} = 0;
+$data{notice}{cycles} = 0;
+
 while(1)
 {
 	if ( !$server{socket} )
@@ -102,6 +108,7 @@ while(1)
 				{
 					queuemsg(1,"PASS $conf{serverpass}");
 				}
+				queuemsg(1,"CAP LS");
 				queuemsg(1,"USER $conf{ident} . . :$conf{rname}");
 				$data{nick} = get_nick();
 				queuemsg(1,"NICK $data{nick}");
@@ -268,7 +275,7 @@ sub apply_update
 
 sub is_admin
 {
-	my $account = $data{account}{$_[0]};
+	my $account = $data{clients}{$_[0]}{account};
 
 	foreach ( @{$conf{admins}} )
 	{
@@ -296,7 +303,13 @@ sub push_notify
 	if ( !$conf{pushenable} || $_[0] =~ /off/i ) { return 0; }
 
 	my $priority = $_[0];
-	my $message = $_[1];
+	my $message;
+
+	if ( $conf{multimode} ) {
+		$message .= "[$data{nick}] ";
+	}
+
+	$message .= $_[1];
 	my $tag;
 
 	my $url = 'https://api.pushover.net/1/messages.json';
@@ -439,7 +452,8 @@ sub timed_events
 			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": $update - run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
 		}
 	}
-	elsif ( time - $data{time}{connexitclean} > 3600 )
+
+	if ( time - $data{time}{connexitclean} > 3600 )
 	{
 		# time to clean the connexit file
 		my @CONN;
@@ -471,34 +485,53 @@ sub timed_events
 		my $time;
 		my $usermore = 0;
 		my $userless = 0;
-		foreach $time ( sort keys %{$data{notice}{move}} )
-		{
-			if ( $time >= time - $conf{cetimethres} )
+		my %ip_stats = (
+			ipv4 => { usermore => 0, userless => 0 },
+			ipv6 => { usermore => 0, userless => 0 }
+		);
+		
+		foreach my $ip_type ('ipv4', 'ipv6') {
+			foreach $time ( sort keys %{$data{notice}{$ip_type}} )
 			{
-				if ( $data{notice}{move}{$time} =~ /^\d/ )
+				if ( $time >= time - $conf{cetimethres} )
 				{
-					$usermore += $data{notice}{move}{$time};
+					if ( $data{notice}{$ip_type}{$time} =~ /^\d/ )
+					{
+						$ip_stats{$ip_type}{usermore} += $data{notice}{$ip_type}{$time};
+					}
+					else
+					{
+						$ip_stats{$ip_type}{userless} -= $data{notice}{$ip_type}{$time};
+					}
 				}
 				else
 				{
-					$userless -= $data{notice}{move}{$time};
+					delete($data{notice}{$ip_type}{$time});
 				}
 			}
-			else
-			{
-				delete($data{notice}{move}{$time});
-			}
+			
+			$usermore += $ip_stats{$ip_type}{usermore};
+			$userless += $ip_stats{$ip_type}{userless};
 		}
+		
+		my $ipv4_usermore = $ip_stats{ipv4}{usermore};
+		my $ipv4_userless = $ip_stats{ipv4}{userless};
+		my $ipv6_usermore = $ip_stats{ipv6}{usermore};
+		my $ipv6_userless = $ip_stats{ipv6}{userless};
 
 		# Possible attack - first cycle.
 		if ( ( abs($usermore) >= $conf{ceuserthres} || abs($userless) >= $conf{ceuserthres} ) && !$data{notice}{cycles} )
 		{
-			send_warning("Possible attack: +$usermore/-$userless users in $conf{cetimethres} seconds ($data{lusers}{locusers} users)");
-			push_notify($conf{pushuserchange}, "USER CHANGE: +$usermore/-$userless");
+			send_warning("Possible attack: +$usermore/-$userless (IPv4: +$ipv4_usermore/-$ipv4_userless, IPv6: +$ipv6_usermore/-$ipv6_userless) users in $conf{cetimethres} seconds ($data{lusers}{locusers} users)");
+			push_notify($conf{pushuserchange}, "USER CHANGE: +$usermore/-$userless (IPv4: +$ipv4_usermore/-$ipv4_userless, IPv6: +$ipv6_usermore/-$ipv6_userless)");
 
 #			$data{notice}{lastprint} = time;
 			$data{notice}{usermore} = $usermore;
 			$data{notice}{userless} = $userless;
+			$data{notice}{ipv4_usermore} = $ipv4_usermore;
+			$data{notice}{ipv4_userless} = $ipv4_userless;
+			$data{notice}{ipv6_usermore} = $ipv6_usermore;
+			$data{notice}{ipv6_userless} = $ipv6_userless;
 			$data{notice}{cycles} = 1;
 		}
 		# Possible attack still ongoing, new cycle. 
@@ -507,6 +540,10 @@ sub timed_events
 #			$data{notice}{lastprint} = time;
 			$data{notice}{usermore} += $usermore;
 			$data{notice}{userless} += $userless;
+			$data{notice}{ipv4_usermore} += $ipv4_usermore;
+			$data{notice}{ipv4_userless} += $ipv4_userless;
+			$data{notice}{ipv6_usermore} += $ipv6_usermore;
+			$data{notice}{ipv6_userless} += $ipv6_userless;
 			$data{notice}{cycles}++;
 		}
 		# No more user changes above threshold. Possible attack has stopped. Summarise and write to log.
@@ -514,8 +551,8 @@ sub timed_events
 		{
 			if ( $data{notice}{cycles} > 1 )
 			{
-				send_warning("Possible attack " . chr(31) . "ended" . chr(31) . ": +$data{notice}{usermore}/-$data{notice}{userless} users in " . $conf{cetimethres} * $data{notice}{cycles} . " seconds ($data{lusers}{locusers} users)");
-				push_notify($conf{pushuserchange}, "USER CHANGE: +$data{notice}{usermore}/-$data{notice}{userless} users in " . $conf{cetimethres} * $data{notice}{cycles} . " seconds");
+				send_warning("Possible attack " . chr(31) . "ended" . chr(31) . ": +$data{notice}{usermore}/-$data{notice}{userless} (IPv4: +$data{notice}{ipv4_usermore}/-$data{notice}{ipv4_userless}, IPv6: +$data{notice}{ipv6_usermore}/-$data{notice}{ipv6_userless}) users in " . $conf{cetimethres} * $data{notice}{cycles} . " seconds ($data{lusers}{locusers} users)");
+				push_notify($conf{pushuserchange}, "USER CHANGE: +$data{notice}{usermore}/-$data{notice}{userless} (IPv4: +$data{notice}{ipv4_usermore}/-$data{notice}{ipv4_userless}, IPv6: +$data{notice}{ipv6_usermore}/-$data{notice}{ipv6_userless}) users in " . $conf{cetimethres} * $data{notice}{cycles} . " seconds");
 			}
 
 			# Find next unique attack id
@@ -562,6 +599,59 @@ sub timed_events
 		$data{time}{lastcheck} = time;
 	}
 	
+	if ( ( time - $data{status}{fw} ) >= $conf{fwinterval} && $conf{fwinterval} > 0 )
+	{
+		if (-e "$conf{path}/var/fwstats.txt")
+		{
+			open my $fh, '<', "$conf{path}/var/fwstats.txt" or die "Cannot open $conf{path}/var/fwstats.txt: $!";
+    			my $line = <$fh>;
+ 			close $fh;
+			chomp($line);
+
+			# Store last data
+			if ( exists $data{fw}{new} )
+			{
+				$data{fw}{old} = { %{$data{fw}{new}} };
+			}
+
+			# Split the line by ':' and fetch the values
+			($data{fw}{new}{timestamp}, $data{fw}{new}{packets}, $data{fw}{new}{bytes}) = split /:/, $line;
+
+			if ( exists $data{fw}{old}{timestamp} && exists $data{fw}{old}{packets} && exists $data{fw}{old}{bytes} 
+				&& $data{fw}{new}{timestamp} != $data{fw}{old}{timestamp} )
+			{
+				$data{fw}{new}{kbps} = int( ( ( ( $data{fw}{new}{bytes} - $data{fw}{old}{bytes} ) / ($data{fw}{new}{timestamp} - $data{fw}{old}{timestamp} ) ) * 8 ) / 1000 );
+				$data{fw}{new}{pps} = int( ( $data{fw}{new}{packets} - $data{fw}{old}{packets} ) / ($data{fw}{new}{timestamp} - $data{fw}{old}{timestamp} ) );
+			}
+
+			if ( $data{fw}{new}{kbps} > $conf{fwkbps} || $data{fw}{new}{pps} > $conf{fwpps} )
+			{
+
+				my $diff_kbps = $data{fw}{new}{kbps} - $data{fw}{old}{kbps};
+				my $diff_pps = $data{fw}{new}{pps} - $data{fw}{old}{pps};
+				if ( $diff_kbps =~ /^\d+$/ ) { $diff_kbps ="+$diff_kbps"; }
+				if ( $diff_pps =~ /^\d+$/ ) { $diff_pps ="+$diff_pps"; }
+				$data{fw}{cycles}++;
+
+				send_warning("Firewall engaging at $data{fw}{new}{kbps}($diff_kbps) kbps / $data{fw}{new}{pps}($diff_pps) pps");
+			}
+			# We are no longer being hit, but last cycle. Notify and reset
+			elsif ( $data{fw}{cycles} )
+			{
+				push_notify($conf{pushfw}, "Firewall no longer engaging after " . $data{fw}{cycles} * $conf{fwinterval} . " seconds");
+				send_warning("Firewall no longer engaging!");
+				$data{fw}{cycles} = 0;
+			}
+
+			if ( $data{fw}{cycles} == 1 )
+			{
+				push_notify($conf{pushfw}, "Firewall engaging!");
+			}
+
+		}
+		$data{status}{fw} = time;
+	}
+
 	if ( ( time - $data{status}{report} ) >= $conf{pollinterval} )
 	{
 		# its report time
@@ -741,11 +831,14 @@ sub timed_events
 				$hub =~ s/\.$conf{networkdomain}//i;
 
 				$rpingmsg .= chr(2) . $hub . chr(2) . ":$data{clines}{$_}";
-				$rpdiff = $data{clines}{$_} - $data{last}{rping}{$_};
-				if ( $rpdiff != 0 )
+				if ( $data{last}{rping}{$_} =~ /^\d+$/ )
 				{
-					if ( $rpdiff =~ /^\d+$/ ) { $rpdiff ="+$rpdiff"; }
-					$rpingmsg .= "($rpdiff)";
+					$rpdiff = $data{clines}{$_} - $data{last}{rping}{$_};
+					if ( $rpdiff != 0 )
+					{
+						if ( $rpdiff =~ /^\d+$/ ) { $rpdiff ="+$rpdiff"; }
+						$rpingmsg .= "($rpdiff)";
+					}
 				}
 				$rpingmsg .= " -- ";
 
@@ -1054,13 +1147,12 @@ sub timed_events
 		}
 	}
 
-	if ( ( time - $data{time}{account} ) >= 300 )
+	if ( ( time - $data{time}{account} ) >= 300 && !$cap{'account-notify'} )
 	{
 		my $channel = $conf{reportchan};
 		if ( $conf{operchan} ne '' ) { $channel .= ",$conf{operchan}"; }
 
 		queuemsg(1,"WHO $channel xco%na");
-		delete $data{account};
 		$data{time}{account} = time;
 	}
 
@@ -1116,9 +1208,12 @@ sub timed_events
 
 		foreach( keys %{$data{clines}} )
 		{
-			if ( int($data{clines}{$_}) > $conf{rpingwarn} && int($data{clines}{$_}) > $data{last}{rping}{$_} && exists $data{uplinks}{$_} )
+			if ( $data{clines}{$_} =~ /^\d+$/
+				&& int($data{clines}{$_}) > $conf{rpingwarn}
+				&& int($data{clines}{$_}) > $data{last}{rping}{$_}
+				&& exists $data{uplinks}{$_} )
 			{
-			my $srv = $_;
+				my $srv = $_;
 				$srv =~ s/\.$conf{networkdomain}//i;
 
 				my $diff = $data{clines}{$_} - $data{last}{rping}{$_};
@@ -1177,37 +1272,38 @@ sub irc_loop
 		my $user = $2;
 		my $host = $3;
 
-		if ( $line =~ /^JOIN ($conf{reportchan})$/i || ($conf{operchan} ne '' && $line =~ /^JOIN ($conf{operchan})$/i ) )
+		if ( $line =~ /^JOIN ($conf{reportchan})(?:\s+(\S+))?(?:\s+:.*)?$/i
+			|| ( $conf{operchan} ne '' && $line =~ /^JOIN ($conf{operchan})(?:\s+(\S+))?(?:\s+:.*)?$/i ) )
 		{
 			# correct channel?
 			my $channel = $1;
-
+			my $account = $2 // '';
+			
 			# user joined channel
 
 			if ( $nick =~ /^$data{nick}$/i )
 			{
 				# its me!
+
+				$data{channels}{lc($channel)}{ison} = 1;
+				$data{channels}{lc($channel)}{limit} = 0;				
+
 				if ( $channel =~ /^\&/ )
 				{
 					queuemsg(1,"MODE $channel +o $data{nick}");
 				}
 
-				if ( $channel =~ /^$conf{reportchan}$/i )
-				{
-					my $checkchan = $conf{reportchan};
-					if ( $conf{operchan} ne '' ) { $checkchan .= ",$conf{operchan}"; }
-					queuemsg(1,"WHO $checkchan xc%nifa");
-					delete $data{oper};
-					delete $data{account};
-				}
+				queuemsg(1,"WHO $channel xc%nifac");
 			}
 			else
 			{
-				queuemsg(2,"WHOIS $nick");
-				queuemsg(2,"USERIP $nick");
-				queuemsg(2,"PRIVMSG $nick :TIME");
-				queuemsg(2,"NOTICE $nick :Please wait while checking your identity...");
+				$data{clients}{$nick}{lc($channel)} = 1;
+				queuemsg(2,"WHO $nick x%nifa");
 			}
+		}
+		elsif ( $line =~ /^ACCOUNT ([^\s]+)$/ )
+		{
+			$data{clients}{$nick}{account} = $1;
 		}
 		elsif ( ($line =~ s/^MODE\s+($conf{reportchan})\s+//i) || ($conf{operchan} ne '' && $line =~ s/^MODE\s+($conf{operchan})\s+//i) )
 		{
@@ -1216,7 +1312,9 @@ sub irc_loop
 			# channel mode
 			if ( $line =~ /^\+o $data{nick}$/i )
 			{
-				if ( $data{lusers}{maxusers} && !$conf{hubmode} && !$conf{multimode} ) {
+				if ( $data{lusers}{maxusers}
+					&& $data{channels}{lc($channel)}{limit} != $data{lusers}{maxusers}
+					&& !$conf{hubmode} && !$conf{multimode} ) {
 					queuemsg(1,"MODE $channel +l $data{lusers}{maxusers}");
 				}
 
@@ -1228,6 +1326,10 @@ sub irc_loop
 				{
 					queuemsg(1,"MODE $channel $conf{chanmode}");
 				}
+			}
+			elsif ( $nick =~ /^$data{nick}$/i && $line =~ /^\+l (\d+)$/ )
+			{
+				$data{channels}{lc($channel)}{limit} = $1;
 			}
 			elsif ( $line =~ /^(\-|\+|\w)+( \d+)*$/ )
 			{
@@ -1248,7 +1350,7 @@ sub irc_loop
 				}
 			}
 		}
-		elsif ( $line =~ s/^(PRIVMSG|NOTICE) $data{nick} ://i && $data{oper}{$nick} )
+		elsif ( $line =~ s/^(PRIVMSG|NOTICE) $data{nick} ://i && $data{clients}{$nick}{oper} )
 		{
 			# message from oper
 			my $replymode = $1;
@@ -1258,8 +1360,8 @@ sub irc_loop
 			{
 				if ( $line =~ /^TIME (.*)$/i )
 				{
-					$data{offset}{$nick} = guess_tz($1);
-					my $offset = easytime($data{offset}{$nick});
+					$data{clients}{$nick}{offset} = guess_tz($1);
+					my $offset = easytime($data{clients}{$nick}{offset});
 					if ( $offset =~ /^\d/ ) { $offset = "+$offset"; }
 					queuemsg(2,"NOTICE $nick :Your offset to GMT is $offset. Timestamps in DCC will be shown in your localtime.");
 				}
@@ -1308,6 +1410,30 @@ sub irc_loop
 					queuemsg(3,"$replymode $nick :note   : help about commands");
 				}
 			}
+
+			elsif ( $line =~ /^debug/i && $debug )
+			{
+				logdeb("Clients:");
+				foreach ( keys %{$data{clients}} )
+				{
+					my $itNick = $_;
+					logdeb("  $itNick");
+					foreach ( keys %{$data{clients}{$itNick}} )
+					{
+						logdeb("    $_: $data{clients}{$itNick}{$_}");
+					}
+				}
+				logdeb("Channels:");
+				foreach ( keys %{$data{channels}} )
+				{
+					my $itChan = $_;
+					logdeb("  $itChan");
+					foreach ( keys %{$data{channels}{$itChan}} )
+					{
+						logdeb("    $_: $data{channels}{$itChan}{$_}");
+					}
+				}
+			}			
 			elsif ( $line =~ /^update (check|install)/i && is_admin($nick) )
 			{
 				my $update = check_update();
@@ -1447,7 +1573,7 @@ sub irc_loop
 						queuemsg(3,"NOTICE \@$conf{reportchan} :$nick requested DCC, code is $code");
 						my $dccip = unpack("N",inet_aton($userip));
 						queuemsg(3,"PRIVMSG $nick :DCC CHAT chat $dccip $dccport");
-						dcc($dccsock,$code,$data{offset}{$nick});
+						dcc($dccsock,$code,$data{clients}{$nick}{offset});
 					}
 					else
 					{
@@ -1487,19 +1613,25 @@ sub irc_loop
 			}
 			else
 			{
-				$data{oper}{$newnick} = $data{oper}{$nick};
-				delete $data{oper}{$nick};
-				$data{offset}{$newnick} = $data{offset}{$nick};
-				delete $data{offset}{$nick};
-				$data{account}{$newnick} = $data{account}{$nick};
-				delete $data{account}{$nick};
+				$data{clients}{$newnick} = $data{clients}{$nick};
+				delete $data{clients}{$nick};
 			}
 		}
-		elsif ( $line =~ /^PART|QUIT/ )
+		elsif ( $line =~ /^QUIT/ )
 		{
-			delete $data{oper}{$nick};
-			delete $data{account}{$nick};
-			delete $data{offset}{$nick};
+			delete $data{clients}{$nick};
+		}
+		elsif ( $line =~ /^PART :?([^\s]+)/ )
+		{
+			# Mark the user as parted from this channel.
+			$data{clients}{$nick}{lc($1)} = 0;
+
+			# If the user is not present on neither channel, delete it.
+			if ( !$data{clients}{$nick}{lc($conf{reportchan})} && !$data{clients}{$nick}{lc($conf{operchan})} )
+			{
+				delete $data{clients}{$nick};
+				logdeb("PART: $nick has left all channels. Deleting.");
+			}
 		}
 
 	}
@@ -1517,13 +1649,27 @@ sub irc_loop
 			}
 			elsif ( $logline =~ /Client connecting: (.*) \((.*)\) \[(.*)\] \{(.*)\} \[(.*)\] <(.*)>$/ )
 			{
-				# nick:host:ip:numeric:class:rname/reason
+				# nick:host:[ip]:numeric:class:rname/reason
 				writemsg("connexit","CONN:$1:$2:[$3]:$6:$4:$5");
+
+				# Log number of connections.
+				$data{notice}{more}++;
+				$data{lusers}{locusers}++;
+				my $time = time;
+				my $ip_type = is_ipv6($3) ? 'ipv6' : 'ipv4';
+				$data{notice}{$ip_type}{$time}++;				
 			}
 			elsif ( $logline =~ /Client exiting: (.*) \((.*)\) \[(.*)\] \[(.*)\] <(.*)>$/ )
 			{
-				# nick:host:ip:numeric:class:rname/reason
+				# nick:host:[ip]:numeric:class:rname/reason
 				writemsg("connexit","EXIT:$1:$2:[$4]:$5::$3");
+
+				# Log number of connections.
+				$data{notice}{less}++;
+				$data{lusers}{locusers}--;
+				my $time = time;
+				my $ip_type = is_ipv6($4) ? 'ipv6' : 'ipv4';
+				$data{notice}{$ip_type}{$time}--;
 			}
 			elsif ( $logline =~ /\*\*\* Notice -- (.*) adding (local|global) GLINE for (.*), expiring at (\d+): (.*)/i )
 			{
@@ -1557,12 +1703,12 @@ sub irc_loop
 			queuemsg(1,"MODE $data{nick} +ids 65535");
 			if ( $conf{chankey} )
 			{
-				if ( $conf{operchan} ne '' ) { queuemsg(1,"JOIN $conf{operchan} $conf{chankey}"); }
+				if ( $conf{operchan} ne '' ) { queuemsg(1,"JOIN $conf{operchan} $conf{chankey}"); } 
 				queuemsg(1,"JOIN $conf{reportchan} $conf{chankey}");
 			}
 			else
 			{
-				if ( $conf{operchan} ne '' ) { queuemsg(1,"JOIN :$conf{operchan}"); }
+				if ( $conf{operchan} ne '' ) { queuemsg(1,"JOIN :$conf{operchan}"); } 
 				queuemsg(1,"JOIN :$conf{reportchan}");
 			}
 		}
@@ -1577,30 +1723,12 @@ sub irc_loop
 			$data{nick} = get_nick();
 			queuemsg(1,"NICK $data{nick}");
 		}
-		elsif ( $line =~ /^313 $data{nick} (.*) :is an irc operator$/i )
-		{
-			$data{oper}{$1} = 1;
-			queuemsg(2,"MODE $conf{reportchan} +o $1");
-			if ( $conf{operchan} ne '' ) { queuemsg(2,"MODE $conf{operchan} +o $1"); }
-		}
-		elsif ( $line =~ /^330 $data{nick} (.*) (.*) :is logged in as$/i )
-		{
-			$data{account}{$1} = $2;
-		}
-		elsif ( $line =~ /^340 $data{nick} :(.*)=(.*)@((\.|\:|[a-f]|[0-9])+)$/i )
-		{
-				my $nick = $1;
-				$nick =~ tr/\*//d;
-
-				foreach ( @{$conf{ippermit}} )
-				{
-					if ( $3 =~ /^$_$/ )
-					{
-						queuemsg(2,"MODE $conf{reportchan} +o $nick");
-						if ( $conf{operchan} ne '' ) { queuemsg(2,"MODE $conf{operchan} +o $nick"); }
-					}
-				}
-		}
+#		elsif ( $line =~ /^491|464 / )
+#		{
+#			# No O:Line
+#			logmsg("No O:Line. Exiting.");
+#			exit;
+#		}
 		elsif ( $line =~ /^251 $data{nick} :There are (\d+) users and (\d+) invisible/i )
 		{
 			my $total = $1 + $2;
@@ -1636,6 +1764,24 @@ sub irc_loop
 			}
 
 		}
+		# We are joning an empty channel. Set modes.
+		elsif ( $line =~ /^353 $data{nick} = ($conf{reportchan}|$conf{operchan}) :\@$data{nick}$/i )
+		{
+			my $channel = $1;
+
+			if ( $data{lusers}{maxusers} && !$conf{hubmode} && !$conf{multimode} ) {
+				queuemsg(1,"MODE $channel +l $data{lusers}{maxusers}");
+			}
+
+			if ( $conf{chanmode} =~ /k/ )
+			{
+				queuemsg(1,"MODE $channel $conf{chanmode} $conf{chankey}");
+			}
+			elsif ( $conf{chanmode} )
+			{
+				queuemsg(1,"MODE $channel $conf{chanmode}");
+			}
+		}
 		elsif ( $line =~ s/^354 $data{nick} //i )
 		{
 			if ( $line =~ /^([^\s]+) ((\.|\:|\w)+) ((\w|\-|\:|\_|\.)+) ([^\s]+) ((\w|\@|\<|\+|\-|\*)+) (\d+) (\w+) :(.*)$/i )
@@ -1655,57 +1801,150 @@ sub irc_loop
 				print WHO "$1	$2	$4	$6	$9	$10	$11	$7\n";
 				close(WHO);
 			}
+			# This regex captures WHO queries for opers on the server.
+			elsif ( $line =~ /^(?!$data{nick})([^\s]+)$/i && $conf{chaninvite} )
+			{
+				if ( !$data{clients}{$1}{lc($conf{reportchan})} )
+				{ queuemsg(2,"INVITE $1 $conf{reportchan}"); }
+
+				if ( $conf{operchan} ne '' && !$data{clients}{$1}{lc($conf{operchan})} )
+				{ queuemsg(2,"INVITE $1 $conf{operchan}"); }
+			}
+			# This regex captures WHO queries for accounts.
+			# This is not in use if account-notify is active.
 			elsif ( $line =~ /^([^\s]+) (\w+)$/i )
 			{
 				if ( $2 ne 0 )
 				{
-					$data{account}{$1} = $2;
+					$data{clients}{$1}{account} = $2;
 				}
 			}
-			elsif ( $line =~ /^((\.|\:|\w)+) ([^\s]+) ((\*|\@|\w)+) (\w+)$/i )
+			# This regex is meant to capture both:
+			# - WHO <channel> xc%nifac
+			# - WHO <nick> x%nifa
+			elsif ( $line =~ /^(?:([&\#][^\s]+)\s)?([^\s]+) (?!$data{nick})([^\s]+) ((\*|\@|\w)+) ([^\s]+)$/i )
 			{
-				# channel who
-				my $ip = $1;
-				my $opernick = $3;
-				my $modes = $4;
-				my $account = $6;
-				my $permitted = 0;
+				my ($channel, $ip, $opernick, $modes, $account) = ($1 // 0, $2, $3, $4, $6);
+				my $giveOps = 1;
+				my $doKick = 1;
 
-				queuemsg(2,"PRIVMSG $opernick :TIME");
+				logdeb("WHO: $channel - $ip - $opernick - $modes - $account");
+				# Register the user's presence on the channel.
+				if ( $channel ne "0" )
+				{
+					$data{clients}{$opernick}{lc($channel)} = 1;
+				}
 
+				if ( lc($channel) eq lc($conf{reportchan}) )
+				{
+					$data{ready} = 1;
+				}
+
+				# Request offset if we haven't already.
+				if ( !exists $data{clients}{$opernick}{offset} )
+				{
+					queuemsg(2,"PRIVMSG $opernick :TIME");
+					queuemsg(2,"NOTICE $opernick :Please wait while checking your identity...");
+					$data{clients}{$opernick}{offset} = 0;
+				}
+
+				my $ip_version = ($ip =~ /:/) ? 6 : 4;
 				foreach ( @{$conf{ippermit}} )
 				{
-					if ( $ip =~ /^$_$/ )
-					{
-						$permitted = 1;
-					}
+					my $block_version = ($_ =~ /:/) ? 6 : 4;
+
+					# Normalise single IPs to CIDR format
+    					my $cidr = $_;
+    					if ($cidr !~ /\/\d+$/)
+					{ $cidr .= ($_ =~ /:/) ? "/128" : "/32"; }
+
+					if ( $ip_version != $block_version )
+					{ next; }
+					
+					if ( Net::CIDR::cidrlookup($ip,$cidr) )
+					{ $doKick = 0; }
 				}
 
 				if ( $modes =~ /\*/ )
 				{
 					# is oper
-					$data{oper}{$opernick} = 1;
+					$data{clients}{$opernick}{oper} = 1;
 
 					if ( $account ne "0" )
-					{ $data{account}{$opernick} = $account; }
+					{ $data{clients}{$opernick}{account} = $account; }
+
+					$doKick = 0;
 				}
-				elsif ( !$permitted )
+
+				if ( $modes =~ /\@/ && $channel ne "0" )
+				{
+					$giveOps = 0;
+				}
+
+				if ( $doKick )
 				{
 					# is not oper nor permitted
-					delete $data{oper}{$opernick};
-					queuemsg(2,"KICK $conf{reportchan} $opernick :You have no right to be in this channel!");
-					if ( $conf{operchan} ne '' ) { queuemsg(2,"KICK $conf{operchan} $opernick :You have no right to be in this channel!"); }
+					if ( $channel ne "0" )
+					{
+						queuemsg(2,"KICK $channel $opernick :You have no right to be in this channel!");
+						$data{clients}{$opernick}{lc($channel)} = 0;
+					}
+					else
+					{
+						if ( $data{clients}{$opernick}{lc($conf{reportchan})} )
+						{
+							queuemsg(2,"KICK $conf{reportchan} $opernick :You have no right to be in this channel!");
+							$data{clients}{$opernick}{lc($conf{reportchan})} = 0;
+						}
+
+						if ( $conf{operchan} ne '' && $data{clients}{$opernick}{lc($conf{operchan})})
+						{
+							queuemsg(2,"KICK $conf{operchan} $opernick :You have no right to be in this channel!");
+							$data{clients}{$opernick}{lc($conf{operchan})} = 0;
+						}
+					}
+
+					# If the user is not present on neither channel, delete it.
+					if ( !$data{clients}{$opernick}{lc($conf{reportchan})}
+						&& ( $conf{operchan} eq '' || !$data{clients}{$opernick}{lc($conf{operchan})} ) )
+					{
+						delete $data{clients}{$opernick};
+						logdeb("KICK: $opernick has left all channels. Deleting.");
+					}
+				}
+				elsif ( $giveOps )
+				{
+					if ( $channel ne "0" )
+					{
+						queuemsg(2,"MODE $channel +o $opernick");
+					}
+					else
+					{
+						if ( $data{channels}{lc($conf{reportchan})}{ison}
+							&& $data{clients}{$opernick}{lc($conf{reportchan})} ) 
+						{
+							queuemsg(2,"MODE $conf{reportchan} +o $opernick");
+						}
+
+						if ( $conf{operchan} ne ''
+							&& $data{channels}{lc($conf{operchan})}{ison}
+							&& $data{clients}{$opernick}{lc($conf{operchan})} ) 
+						{
+							queuemsg(2,"MODE $conf{operchan} +o $opernick");
+						}
+					}
 				}
 			}
 		}
 		elsif ( $line =~ /^315 $data{nick} / )
 		{
 			# end of WHO
-			if ( !$data{rfs} )
+			if ( !$data{rfs} && $data{ready} )
 			{ 
 				queuemsg(2,$CMD . chr(3) . 2 . chr(2) . "Sentinel" . chr(2) . " v$conf{version}, ready." . chr(3));
+				$data{rfs} = 1;
+				queuemsg(2,"WHO $data{servername} xo%n");
 			}
-			$data{rfs} = 1;
 
 			if ( !$conf{hubmode} && $conf{locglineaction} !~ /disable/i )
 			{
@@ -1800,21 +2039,7 @@ sub irc_loop
 		}
 		elsif ( $line =~ s/^NOTICE (.*) :\*\*\* Notice -- //i )
 		{
-			if ( $line =~ /^client connecting:/i )
-			{
-				$data{notice}{more}++;
-				$data{lusers}{locusers}++;
-				my $time = time;
-				$data{notice}{move}{$time}++;
-			}
-			elsif ( $line =~ /^client exiting:/i )
-			{
-				$data{notice}{less}++;
-				$data{lusers}{locusers}--;
-				my $time = time;
-				$data{notice}{move}{$time}--;
-			}
-			elsif ( $line =~ /^Failed OPER attempt by (.*) \((.*)\)$/i )
+			if ( $line =~ /^Failed OPER attempt by (.*) \((.*)\)$/i )
 			{
 				my $failnick = $1;
 				my $failhost = $2;
@@ -1848,11 +2073,20 @@ sub irc_loop
 					$opermode = "LocalOPER";
 				}
 
-				queuemsg(2,$CMD . chr(3) . 2 . "$opernick\!$operhost is now ". chr(31) ."$opermode" . chr(31) . chr(3));
-				if ( !($opernick =~ /^$data{nick}$/i ) && $conf{chaninvite} )
+				if ( $data{channels}{lc($conf{reportchan})}{ison} )
 				{
-					queuemsg(2,"INVITE $opernick $conf{reportchan}");
-					if ( $conf{operchan} ne '' ) { queuemsg(2,"INVITE $opernick $conf{operchan}"); }
+					queuemsg(2,$CMD . chr(3) . 2 . "$opernick\!$operhost is now ". chr(31) ."$opermode" . chr(31) . chr(3));
+					if ( !($opernick =~ /^$data{nick}$/i ) && $conf{chaninvite} )
+					{
+						queuemsg(2,"INVITE $opernick $conf{reportchan}");
+					}
+				}
+
+				if ( $data{channels}{lc($conf{operchan})}{ison} 
+					&& !($opernick =~ /^$data{nick}$/i )
+					&& $conf{chaninvite} )
+				{
+					queuemsg(2,"INVITE $opernick $conf{operchan}");
 				}
 			}
 			elsif ( $line =~ /^Net junction: ([^\s]+) ([^\s]+)$/ )
@@ -1929,18 +2163,51 @@ sub irc_loop
 				}
 			}
 		}
-		elsif ( $line =~ /NOTICE $data{nick} :Highest connection count: \d+ \((\d+) clients\)$/ )
+		elsif ( $line =~ /NOTICE $data{nick} :Highest connection count: \d+ \((\d+) clients\)$/ && !$conf{hubmode} )
 		{
-			if ( !$conf{hubmode} )
+			$data{lusers}{maxusers} = $1;
+			$data{status}{lusers} = 1;
+			if ( !$conf{multimode} )
 			{
-				$data{lusers}{maxusers} = $1;
-				$data{status}{lusers} = 1;
-				if ( !$conf{multimode} )
+				if ( $data{channels}{lc($conf{reportchan})}{ison}
+					&& $data{channels}{lc($conf{reportchan})}{limit} != $data{lusers}{maxusers} )
 				{
 					queuemsg(1,"MODE $conf{reportchan} +l $data{lusers}{maxusers}");
-					if ( $conf{operchan} ne '' ) { queuemsg(1,"MODE $conf{operchan} +l $data{lusers}{maxusers}"); }
+				}
+
+				if ( $data{channels}{lc($conf{operchan})}{ison}
+					&& $data{channels}{lc($conf{operchan})}{limit} != $data{lusers}{maxusers} )
+				{
+					queuemsg(1,"MODE $conf{operchan} +l $data{lusers}{maxusers}");
 				}
 			}
+		}
+		elsif ( $line =~ /^CAP ($data{nick}|\*) LS :(.*)/ )
+		{
+			foreach my $capab (split /\s+/, $2) {
+				$cap{$capab} = 0;
+				logdeb("Recognized CAP: $capab");
+			}
+
+			# Checking for account-notify and extended-join
+			my $capReq;
+			$capReq .= "account-notify " if exists $cap{'account-notify'};
+			$capReq .= "extended-join " if exists $cap{'extended-join'};
+			$capReq =~ s/\s+$//;
+
+			if ( $capReq ne '' )
+			{
+				queuemsg(1, "CAP REQ :$capReq");
+			}
+		}
+		elsif ( $line =~ /^CAP ($data{nick}|\*) ACK :(.*)/ )
+		{
+			foreach my $capab (split /\s+/, $2) {
+				$cap{$capab} = 1;
+				logdeb("Enabled CAP: $capab");
+			}
+
+			queuemsg(1, "CAP END");
 		}
 	}
 	elsif ( $line =~ /^PING :(.*)/ )
@@ -2142,9 +2409,9 @@ sub load_config
 		{ push(@ECONF,"OPERUSER"); }
 		if ( !( $newconf{operpass} =~ /^.+$/ ) )
 		{ push(@ECONF,"OPERPASS"); }
-		if ( !( $newconf{reportchan} =~ /^(\&|\#)\w+$/ ) )
-		{ push(@ECONF,"REPORTHAN"); }
-		if ( !( $newconf{operchan} =~ /^((\&|\#)\w+)?$/ ) )
+		if ( !( $newconf{reportchan} =~ /^(\&|\#)[^\s]+$/ ) )
+		{ push(@ECONF,"REPORTCHAN"); }
+		if ( !( $newconf{operchan} =~ /^$|^(\&|\#)[^\s]+$/ ) )
 		{ push(@ECONF,"OPERCHAN"); }
 		if ( !( $newconf{chankey} =~ /^(([^\s]+)|)$/ ) )
 		{ push(@ECONF,"CHANKEY"); }
@@ -2212,14 +2479,25 @@ sub load_config
 		if ( !( $newconf{cputhres} =~ /^\d+$/ ) )
 		{ push(@ECONF,"CPUTHRES"); }
 
+		if ( !( $newconf{fwinterval} =~ /^\d+$/ ) )
+		{ push(@ECONF,"FWINTERVAL"); }
+		if ( !( $newconf{fwkbps} =~ /^\d+$/ ) )
+		{ push(@ECONF,"FWKBPS"); }
+		if ( !( $newconf{fwpps} =~ /^\d+$/ ) )
+		{ push(@ECONF,"FWPPS"); }
+
 		if ( !( $newconf{rname} =~ /^.+$/ ) )
 		{ push(@ECONF,"RNAME"); }
 
 		if ( !( $newconf{pushenable} =~ /^0|1$/ ) )
 		{ push(@ECONF,"PUSHENABLE"); }
 
-		if ( !( $newconf{pushnetsplit} =~ /^(\w|\.)+ \-2|\-1|0|1|2$/ ) )
-		{ push(@ECONF,"PUSHNETSPLIT"); }
+		if ( defined $newconf{pushnetsplit} )
+		{
+			if ( !( $newconf{pushnetsplit} =~ /^(?:(?:\w|\.)+ (?:\-2|\-1|0|1|2))?$/ ) )
+			{ push(@ECONF,"PUSHNETSPLIT"); }
+		}
+
 		if ( !( $newconf{pushnetall} =~ /^off|\-2|\-1|0|1|2$/i ) )
 		{ push(@ECONF,"PUSHNETALL"); }
 		if ( !( $newconf{pushnetjoin} =~ /^off|\-2|\-1|0|1|2$/i ) )
@@ -2242,6 +2520,8 @@ sub load_config
 		{ push(@ECONF,"PUSHUSERCHANGE"); }
 		if ( !( $newconf{pushcpu} =~ /^off|\-2|\-1|0|1|2$/i ) )
 		{ push(@ECONF,"PUSHCPU"); }
+		if ( !( $newconf{pushfw} =~ /^off|\-2|\-1|0|1|2$/i ) )
+		{ push(@ECONF,"PUSHFW"); }
 
 		if ( !( $newconf{rpingwarn} =~ /^.+$/ ) )
 		{ push(@ECONF,"RPINGWARN"); }
@@ -3383,4 +3663,9 @@ sub wild2reg
 	$wild =~ s/\?/\./g;
 
 	return $wild;
+}
+
+sub is_ipv6 {
+    my ($ip) = @_;
+    return $ip =~ /:/ ? 1 : 0;
 }
