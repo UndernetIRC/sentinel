@@ -44,7 +44,7 @@ use Net::CIDR;
 $|=1;
 
 my $version = '1.2';
-my $revision = 2025041900;
+my $revision = 2025042000;
 
 $SIG{PIPE} = "IGNORE";
 $SIG{CHLD} = sub { while ( waitpid(-1, WNOHANG) > 0 ) { } };
@@ -89,6 +89,7 @@ $data{time}{account} = 0;
 $data{time}{lastcheck} = 0;
 $data{time}{checkupdate} = 0;
 $data{time}{connexitclean} = 0;
+$data{time}{fw} = 0;
 
 # Initialising counters
 $data{fw}{cycles} = 0;
@@ -439,11 +440,11 @@ sub timed_events
 		{
 			queuemsg(3,$CMD . chr(3) . 2 . chr(2) . "UPDATE" . chr(2) . ": An update is available, but the following dependencies are missing: $update. Please install and re-run " . chr(31) . "update install" . chr(31) . " to update." . chr(3));
 		}
-		elsif ( $update == 0 )
+		elsif ( $update eq '0' )
 		{
 			logdeb("No updates available (running v$version (rev. $revision)).");
 		}
-		elsif ( $update == -1 )
+		elsif ( $update eq '-1' )
 		{
 			logdeb("There was an error checking for updates. (-1)");
 		}
@@ -599,7 +600,7 @@ sub timed_events
 		$data{time}{lastcheck} = time;
 	}
 	
-	if ( ( time - $data{status}{fw} ) >= $conf{fwinterval} && $conf{fwinterval} > 0 )
+	if ( ( time - $data{time}{fw} ) >= $conf{fwinterval} && $conf{fwinterval} > 0 )
 	{
 		if (-e "$conf{path}/var/fwstats.txt")
 		{
@@ -649,7 +650,7 @@ sub timed_events
 			}
 
 		}
-		$data{status}{fw} = time;
+		$data{time}{fw} = time;
 	}
 
 	if ( ( time - $data{status}{report} ) >= $conf{pollinterval} )
@@ -1312,6 +1313,8 @@ sub irc_loop
 			# channel mode
 			if ( $line =~ /^\+o $data{nick}$/i )
 			{
+				$data{channels}{lc($channel)}{isop} = 1;
+
 				if ( $data{lusers}{maxusers}
 					&& $data{channels}{lc($channel)}{limit} != $data{lusers}{maxusers}
 					&& !$conf{hubmode} && !$conf{multimode} ) {
@@ -1443,11 +1446,11 @@ sub irc_loop
 				{
 					$update = "An update is available, but the following dependencies are missing: $update. Please install and re-run 'update install'.";
 				}
-				elsif ( $update == 0 )
+				elsif ( $update eq '0' )
 				{
 					$update = "No updates available (running v$version (rev. $revision)).";
 				}
-				elsif ( $update == -1 )
+				elsif ( $update eq '-1' )
 				{
 					$update = "There was an error checking for updates.";
 				}
@@ -1598,6 +1601,10 @@ sub irc_loop
 				{
 					queuemsg(3,"$replymode $nick :error: missing or incorrect argument(s), try 'help raw'");
 				}
+			}
+			elsif ( $line =~ /^Please wait while checking your identity.../ )
+			{
+				# Ignore
 			}
 			else
 			{
@@ -1768,6 +1775,7 @@ sub irc_loop
 		elsif ( $line =~ /^353 $data{nick} = ($conf{reportchan}|$conf{operchan}) :\@$data{nick}$/i )
 		{
 			my $channel = $1;
+			$data{channels}{lc($channel)}{isop} = 1;
 
 			if ( $data{lusers}{maxusers} && !$conf{hubmode} && !$conf{multimode} ) {
 				queuemsg(1,"MODE $channel +l $data{lusers}{maxusers}");
@@ -1822,10 +1830,11 @@ sub irc_loop
 			# This regex is meant to capture both:
 			# - WHO <channel> xc%nifac
 			# - WHO <nick> x%nifa
+			# $channel is 0 if it's a query for a user.
 			elsif ( $line =~ /^(?:([&\#][^\s]+)\s)?([^\s]+) (?!$data{nick})([^\s]+) ((\*|\@|\w)+) ([^\s]+)$/i )
 			{
 				my ($channel, $ip, $opernick, $modes, $account) = ($1 // 0, $2, $3, $4, $6);
-				my $giveOps = 1;
+				my $giveOps = 0;
 				my $doKick = 1;
 
 				logdeb("WHO: $channel - $ip - $opernick - $modes - $account");
@@ -1862,7 +1871,11 @@ sub irc_loop
 					{ next; }
 					
 					if ( Net::CIDR::cidrlookup($ip,$cidr) )
-					{ $doKick = 0; }
+					{ 
+						$doKick = 0;
+						$giveOps = 1;
+						last;
+					}
 				}
 
 				if ( $modes =~ /\*/ )
@@ -1874,6 +1887,7 @@ sub irc_loop
 					{ $data{clients}{$opernick}{account} = $account; }
 
 					$doKick = 0;
+					$giveOps = 1;
 				}
 
 				if ( $modes =~ /\@/ && $channel ne "0" )
@@ -1916,19 +1930,21 @@ sub irc_loop
 				{
 					if ( $channel ne "0" )
 					{
-						queuemsg(2,"MODE $channel +o $opernick");
+						queuemsg(2,"MODE $channel +o $opernick") if $data{channels}{lc($channel)}{isop};
 					}
 					else
 					{
 						if ( $data{channels}{lc($conf{reportchan})}{ison}
-							&& $data{clients}{$opernick}{lc($conf{reportchan})} ) 
+							&& $data{clients}{$opernick}{lc($conf{reportchan})}
+							&& $data{channels}{lc($conf{reportchan})}{isop} ) 
 						{
 							queuemsg(2,"MODE $conf{reportchan} +o $opernick");
 						}
 
 						if ( $conf{operchan} ne ''
 							&& $data{channels}{lc($conf{operchan})}{ison}
-							&& $data{clients}{$opernick}{lc($conf{operchan})} ) 
+							&& $data{clients}{$opernick}{lc($conf{operchan})}
+							&& $data{channels}{lc($conf{operchan})}{isop} ) 
 						{
 							queuemsg(2,"MODE $conf{operchan} +o $opernick");
 						}
